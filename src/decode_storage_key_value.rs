@@ -35,8 +35,16 @@ impl From<Metadata> for StoragePrefixLookupTable {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TransparentStorageType {
     Plain,
-    Map { key: String, value_ty: String },
-    DoubleMap { key1: String, key2: String },
+    Map {
+        key: String,
+        value_ty: String,
+    },
+    DoubleMap {
+        key1: String,
+        key1_ty: String,
+        key2: String,
+        key2_ty: String,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -109,15 +117,56 @@ impl StoragePrefixLookupTable {
                         StorageHasher::Twox64Concat | StorageHasher::Blake2_128Concat => {
                             let key1_hash_length = hash_length_of(hasher);
 
-                            match key2_hasher {
-                                StorageHasher::Twox64Concat | StorageHasher::Blake2_128Concat => {
-                                    let key2_hash_length = hash_length_of(key2_hasher);
+                            // key1 ++ hashed_key2 ++ key2
+                            let key1_hashed_key2_key2 = &hashed_key_concat[key1_hash_length..];
+
+                            let key1_ty: String = match key1 {
+                                DecodeDifferent::Encode(b) => {
+                                    unreachable!("TODO: really unreachable?")
                                 }
-                                _ => unreachable!(
+                                DecodeDifferent::Decoded(o) => o.into(),
+                            };
+
+                            if let Some(key1_length) = get_key1_length(key1_ty.clone()) {
+                                let key1 = &key1_hashed_key2_key2[..key1_length as usize];
+                                let hashed_key2_key2 =
+                                    &key1_hashed_key2_key2[key1_length as usize..];
+                                match key2_hasher {
+                                    StorageHasher::Twox64Concat
+                                    | StorageHasher::Blake2_128Concat => {
+                                        let key2_hash_length = hash_length_of(key2_hasher);
+                                        let raw_key2 = &hashed_key2_key2[key2_hash_length..];
+
+                                        let key2_ty: String = match key2 {
+                                            DecodeDifferent::Encode(b) => {
+                                                unreachable!("TODO: really unreachable?")
+                                            }
+                                            DecodeDifferent::Decoded(o) => o.into(),
+                                        };
+
+                                        Some(TransparentStorageKey {
+                                            module_prefix: String::from(
+                                                &storage_metadata.module_prefix,
+                                            ),
+                                            storage_prefix: String::from(
+                                                &storage_metadata.storage_prefix,
+                                            ),
+                                            ty: TransparentStorageType::DoubleMap {
+                                                key1: key1.into(),
+                                                key1_ty,
+                                                key2: raw_key2.into(),
+                                                key2_ty,
+                                            },
+                                        })
+                                    }
+                                    _ => unreachable!(
                                     "All DoubleMap storage should use foo_concat hasher for key2"
                                 ),
+                                }
+                            } else {
+                                println!("ERROR: can not infer the length of key1");
+                                None
                             }
-                            todo!()
                         }
                         _ => unreachable!(
                             "All DoubleMap storage should use foo_concat hasher for key1"
@@ -130,6 +179,32 @@ impl StoragePrefixLookupTable {
             None
         }
     }
+}
+
+// TODO: ensure all key1 in DoubleMap are included in this table.
+fn get_double_map_key1_length_table() -> HashMap<String, u32> {
+    let mut double_map_key1_length_table = HashMap::new();
+    // For the test metadata:
+    // [
+    //  ("Kind", "OpaqueTimeSlot"),
+    //  ("T::AccountId", "[u8; 32]"),
+    //  ("EraIndex", "T::AccountId"),
+    //  ("EraIndex", "T::AccountId"),
+    //  ("EraIndex", "T::AccountId"),
+    //  ("EraIndex", "T::AccountId"),
+    //  ("EraIndex", "T::AccountId"),
+    //  ("SessionIndex", "AuthIndex"),
+    //  ("SessionIndex", "T::ValidatorId")
+    // ]
+    double_map_key1_length_table.insert(String::from("T::AccountId"), 64);
+    double_map_key1_length_table.insert(String::from("SessionIndex"), 8);
+    double_map_key1_length_table.insert(String::from("EraIndex"), 8);
+    double_map_key1_length_table
+}
+
+fn get_key1_length(key1_ty: String) -> Option<u32> {
+    let table = get_double_map_key1_length_table();
+    table.get(&key1_ty).copied()
 }
 
 // Returns the length of this hasher in hex.
@@ -167,6 +242,47 @@ mod tests {
         let meta: RuntimeMetadataPrefixed =
             Decode::decode(&mut data.as_slice()).expect("failed to decode metadata prefixed");
         meta.try_into().expect("failed to convert to metadata")
+    }
+
+    // Filter out (key1, key2) pairs of all DoubleMap.
+    fn filter_double_map() -> Vec<(String, String)> {
+        let metadata = get_metadata();
+        let double_map_keys = metadata
+            .modules
+            .into_iter()
+            .map(|(_, module_metadata)| {
+                module_metadata
+                    .storage
+                    .into_iter()
+                    .filter_map(|(_, storage_metadata)| {
+                        if let StorageEntryType::DoubleMap {
+                            ref key1, ref key2, ..
+                        } = storage_metadata.ty
+                        {
+                            let key1_ty: String = match key1 {
+                                DecodeDifferent::Encode(b) => {
+                                    unreachable!("TODO: really unreachable?")
+                                }
+                                DecodeDifferent::Decoded(o) => o.into(),
+                            };
+
+                            let key2_ty: String = match key2 {
+                                DecodeDifferent::Encode(b) => {
+                                    unreachable!("TODO: really unreachable?")
+                                }
+                                DecodeDifferent::Decoded(o) => o.into(),
+                            };
+
+                            Some((key1_ty, key2_ty))
+                        } else {
+                            None
+                        }
+                    })
+            })
+            .flatten()
+            .collect::<Vec<_>>();
+
+        double_map_keys
     }
 
     // hex(encoded): 010000000864000000000000000000000000000000c80000000000000000000000000000002c01000000000000000000000000000090010000000000000000000000000000
@@ -234,6 +350,34 @@ mod tests {
         } else {
             panic!("Not Map")
         }
+    }
+
+    #[test]
+    fn parse_storage_double_map_should_work() {
+        //       ImOnline 0x2b06af9719ac64d755623cda8ddd9b94
+        // AuthoredBlocks 0xb1c371ded9e9c565e89ba783c4d5f5f9
+        // key1 twox_64_concat SessionIndex
+        // key2 twxo_64_concat T::ValidatorId
+        let storage_key = "2b06af9719ac64d755623cda8ddd9b94b1c371ded9e9c565e89ba783c4d5f5f9b4def25cfda6ef3a00000000e535263148daaf49be5ddb1579b72e84524fc29e78609e3caf42e85aa118ebfe0b0ad404b5bdd25f";
+        let metadata = get_metadata();
+        let table: StoragePrefixLookupTable = metadata.into();
+        println!("{:?}", table.parse_storage_key(storage_key.into()));
+
+        let expected = TransparentStorageKey {
+            module_prefix: "ImOnline".into(),
+            storage_prefix: "AuthoredBlocks".into(),
+            ty: TransparentStorageType::DoubleMap {
+                key1: "00000000".into(),
+                key1_ty: "SessionIndex".into(),
+                key2: "be5ddb1579b72e84524fc29e78609e3caf42e85aa118ebfe0b0ad404b5bdd25f".into(),
+                key2_ty: "T::ValidatorId".into(),
+            },
+        };
+
+        assert_eq!(
+            table.parse_storage_key(storage_key.into()).unwrap(),
+            expected
+        );
     }
 
     #[test]
