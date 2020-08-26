@@ -1,0 +1,20 @@
+[package]
+name = "test-decode-tx"
+version = "0.1.0"
+authors = ["Liu-Cheng Xu <xuliuchengxlc@gmail.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+hex = "0.4"
+codec = { package = "parity-scale-codec", version = "1.3 "}
+# node-runtime = { path = "../../paritytech/substrate/bin/node/runtime" }
+pallet-balances = { path = "../../paritytech/substrate/frame/balances" }
+frame-system = { path = "../../paritytech/substrate/frame/system" }
+polkadot-runtime = { path = "../../paritytech/polkadot/runtime/polkadot" }
+polkadot-primitives = { path = "../../paritytech/polkadot/primitives" }
+frame-support = { path = "../../paritytech/substrate/frame/support" }
+frame-metadata = { path = "../../paritytech/substrate/frame/metadata" }
+sp-core = { path = "../../paritytech/substrate/primitives/core" }
+thiserror = "1.0"
