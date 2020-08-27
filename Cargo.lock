@@ -1335,6 +1335,15 @@ dependencies = [
 
 [[package]]
 name = "impl-serde"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "58e3cae7e99c7ff5a995da2cf78dd0a5383740eda71d98cf7b1910c301ac69b8"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "impl-serde"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b47ca4d2b6931707a55fce5cf66aff80e2178c8b63bbb4ecb5695cbc870ddf6f"
@@ -2731,7 +2740,7 @@ checksum = "c55c21c64d0eaa4d7ed885d959ef2d62d9e488c27c0e02d9aa5ce6c877b7d5f8"
 dependencies = [
  "fixed-hash",
  "impl-codec",
- "impl-serde",
+ "impl-serde 0.3.1",
  "uint",
 ]
 
@@ -3742,7 +3751,7 @@ dependencies = [
  "hash-db",
  "hash256-std-hasher",
  "hex",
- "impl-serde",
+ "impl-serde 0.3.1",
  "lazy_static",
  "libsecp256k1",
  "log 0.4.11",
@@ -3786,7 +3795,7 @@ dependencies = [
  "hash-db",
  "hash256-std-hasher",
  "hex",
- "impl-serde",
+ "impl-serde 0.3.1",
  "lazy_static",
  "libsecp256k1",
  "log 0.4.11",
@@ -4198,7 +4207,7 @@ source = "git+https://github.com/paritytech/substrate?branch=master#43c0b11696cb
 name = "sp-storage"
 version = "2.0.0-rc6"
 dependencies = [
- "impl-serde",
+ "impl-serde 0.2.3",
  "parity-scale-codec",
  "ref-cast",
  "serde",
@@ -4211,7 +4220,7 @@ name = "sp-storage"
 version = "2.0.0-rc6"
 source = "git+https://github.com/paritytech/substrate?branch=master#43c0b11696cb7702b26794707c29ea9f498bbfdb"
 dependencies = [
- "impl-serde",
+ "impl-serde 0.3.1",
  "parity-scale-codec",
  "ref-cast",
  "serde",
@@ -4310,7 +4319,7 @@ dependencies = [
 name = "sp-version"
 version = "2.0.0-rc6"
 dependencies = [
- "impl-serde",
+ "impl-serde 0.2.3",
  "parity-scale-codec",
  "serde",
  "sp-runtime 2.0.0-rc6",
@@ -4322,7 +4331,7 @@ name = "sp-version"
 version = "2.0.0-rc6"
 source = "git+https://github.com/paritytech/substrate?branch=master#43c0b11696cb7702b26794707c29ea9f498bbfdb"
 dependencies = [
- "impl-serde",
+ "impl-serde 0.3.1",
  "parity-scale-codec",
  "serde",
  "sp-runtime 2.0.0-rc6 (git+https://github.com/paritytech/substrate)",

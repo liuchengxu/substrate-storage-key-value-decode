@@ -8,10 +8,16 @@ use frame_metadata::{DecodeDifferent, StorageEntryType, StorageHasher};
 //    Storage Key/Value decode
 ////////////////////////////////////////////////////////////////////////
 
-// storage prefix in hex string to the StorageMetadata
-pub struct StoragePrefixLookupTable(pub HashMap<String, StorageMetadata>);
+/// module prefix and storage prefix both use twx_128 hasher. One twox_128
+/// hasher is 32 chars in hex string, i.e, the prefix length is 32 * 2.
+pub const PREFIX_LENGTH: usize = 32 * 2;
 
-impl From<Metadata> for StoragePrefixLookupTable {
+/// Map of StorageKey prefix (module_prefix++storage_prefix) in hex string to StorageMetadata.
+///
+/// So that we can know about the StorageMetadata given a complete StorageKey.
+pub struct StorageMetadataLookupTable(pub HashMap<String, StorageMetadata>);
+
+impl From<Metadata> for StorageMetadataLookupTable {
     fn from(metadata: Metadata) -> Self {
         Self(
             metadata
@@ -32,11 +38,17 @@ impl From<Metadata> for StoragePrefixLookupTable {
     }
 }
 
+// Transparent type of decoded StorageKey.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TransparentStorageType {
-    Plain,
+    Plain {
+        /// "u32"
+        value_ty: String,
+    },
     Map {
+        /// value of key, e.g, "be5ddb1579b72e84524fc29e78609e3caf42e85aa118ebfe0b0ad404b5bdd25f" for T::AccountId
         key: String,
+        /// type of value, e.g., "AccountInfo<T::Index, T::AccountData>"
         value_ty: String,
     },
     DoubleMap {
@@ -44,6 +56,7 @@ pub enum TransparentStorageType {
         key1_ty: String,
         key2: String,
         key2_ty: String,
+        value_ty: String,
     },
 }
 
@@ -54,18 +67,32 @@ pub struct TransparentStorageKey {
     pub ty: TransparentStorageType,
 }
 
-// in hex
-// module twox_128, 32 chars
-// storage prefix twox_128, 32 chars
-// module_prefix + storage_prefix = 32 * 2
-pub const PREFIX_LENGTH: usize = 32 * 2;
+/// Converts the inner of `DecodeDifferent::Decoded(_)` to String.
+fn as_decoded_type<B: 'static, O: 'static + Into<String>>(value: DecodeDifferent<B, O>) -> String {
+    match value {
+        DecodeDifferent::Encode(b) => unreachable!("TODO: really unreachable?"),
+        DecodeDifferent::Decoded(o) => o.into(),
+    }
+}
 
-impl StoragePrefixLookupTable {
+fn build_transparent_storage_key(
+    storage_metadata: &StorageMetadata,
+    ty: TransparentStorageType,
+) -> TransparentStorageKey {
+    TransparentStorageKey {
+        module_prefix: String::from(&storage_metadata.module_prefix),
+        storage_prefix: String::from(&storage_metadata.storage_prefix),
+        ty,
+    }
+}
+
+impl StorageMetadataLookupTable {
+    /// Returns the StorageMetadata given the `prefix` of a StorageKey.
     pub fn lookup(&self, prefix: &str) -> Option<&StorageMetadata> {
         self.0.get(prefix)
     }
 
-    // Parse the final storage key and return the _readable_ key.
+    /// Converts `storage_key` in hex string to a _readable_ format.
     pub fn parse_storage_key(&self, storage_key: String) -> Option<TransparentStorageKey> {
         let storage_prefix = &storage_key[..PREFIX_LENGTH];
 
@@ -74,7 +101,9 @@ impl StoragePrefixLookupTable {
                 StorageEntryType::Plain(value) => Some(TransparentStorageKey {
                     module_prefix: String::from(&storage_metadata.module_prefix),
                     storage_prefix: String::from(&storage_metadata.storage_prefix),
-                    ty: TransparentStorageType::Plain,
+                    ty: TransparentStorageType::Plain {
+                        value_ty: as_decoded_type(value.clone()),
+                    },
                 }),
                 StorageEntryType::Map {
                     hasher,
@@ -88,19 +117,15 @@ impl StoragePrefixLookupTable {
                         let _hashed_key = &hashed_key_concat[..hash_length];
                         let key = &hashed_key_concat[hash_length..];
 
-                        let value_ty: String = match value {
-                            DecodeDifferent::Encode(b) => unreachable!("TODO: really unreachable?"),
-                            DecodeDifferent::Decoded(o) => o.into(),
+                        let transparent_ty = TransparentStorageType::Map {
+                            key: key.into(),
+                            value_ty: as_decoded_type(value.clone()),
                         };
 
-                        Some(TransparentStorageKey {
-                            module_prefix: String::from(&storage_metadata.module_prefix),
-                            storage_prefix: String::from(&storage_metadata.storage_prefix),
-                            ty: TransparentStorageType::Map {
-                                key: key.into(),
-                                value_ty,
-                            },
-                        })
+                        Some(build_transparent_storage_key(
+                            &storage_metadata,
+                            transparent_ty,
+                        ))
                     }
                     _ => unreachable!("All Map storage should use foo_concat hasher"),
                 },
@@ -120,44 +145,32 @@ impl StoragePrefixLookupTable {
                             // key1 ++ hashed_key2 ++ key2
                             let key1_hashed_key2_key2 = &hashed_key_concat[key1_hash_length..];
 
-                            let key1_ty: String = match key1 {
-                                DecodeDifferent::Encode(b) => {
-                                    unreachable!("TODO: really unreachable?")
-                                }
-                                DecodeDifferent::Decoded(o) => o.into(),
-                            };
+                            let key1_ty = as_decoded_type(key1.clone());
 
                             if let Some(key1_length) = get_key1_length(key1_ty.clone()) {
-                                let key1 = &key1_hashed_key2_key2[..key1_length as usize];
-                                let hashed_key2_key2 =
-                                    &key1_hashed_key2_key2[key1_length as usize..];
+                                let key1 = &key1_hashed_key2_key2[..key1_length];
+                                let hashed_key2_key2 = &key1_hashed_key2_key2[key1_length..];
+
                                 match key2_hasher {
                                     StorageHasher::Twox64Concat
                                     | StorageHasher::Blake2_128Concat => {
                                         let key2_hash_length = hash_length_of(key2_hasher);
                                         let raw_key2 = &hashed_key2_key2[key2_hash_length..];
 
-                                        let key2_ty: String = match key2 {
-                                            DecodeDifferent::Encode(b) => {
-                                                unreachable!("TODO: really unreachable?")
-                                            }
-                                            DecodeDifferent::Decoded(o) => o.into(),
+                                        let key2_ty = as_decoded_type(key2.clone());
+
+                                        let transparent_ty = TransparentStorageType::DoubleMap {
+                                            key1: key1.into(),
+                                            key1_ty,
+                                            key2: raw_key2.into(),
+                                            key2_ty,
+                                            value_ty: as_decoded_type(value.clone()),
                                         };
 
-                                        Some(TransparentStorageKey {
-                                            module_prefix: String::from(
-                                                &storage_metadata.module_prefix,
-                                            ),
-                                            storage_prefix: String::from(
-                                                &storage_metadata.storage_prefix,
-                                            ),
-                                            ty: TransparentStorageType::DoubleMap {
-                                                key1: key1.into(),
-                                                key1_ty,
-                                                key2: raw_key2.into(),
-                                                key2_ty,
-                                            },
-                                        })
+                                        Some(build_transparent_storage_key(
+                                            &storage_metadata,
+                                            transparent_ty,
+                                        ))
                                     }
                                     _ => unreachable!(
                                     "All DoubleMap storage should use foo_concat hasher for key2"
@@ -181,7 +194,9 @@ impl StoragePrefixLookupTable {
     }
 }
 
-// TODO: ensure all key1 in DoubleMap are included in this table.
+/// TODO: ensure all key1 in DoubleMap are included in this table.
+///
+/// NOTE: The lucky thing is that key1 of double_map normally uses the fixed size encoding.
 fn get_double_map_key1_length_table() -> HashMap<String, u32> {
     let mut double_map_key1_length_table = HashMap::new();
     // For the test metadata:
@@ -202,12 +217,16 @@ fn get_double_map_key1_length_table() -> HashMap<String, u32> {
     double_map_key1_length_table
 }
 
-fn get_key1_length(key1_ty: String) -> Option<u32> {
+/// Returns the length of key1 for a DoubleMap.
+///
+/// For key1 ++ hashed_key2 ++ key2, we already know the length of hashed_key2, plus
+/// the length of key1, we could also infer the length of key2.
+fn get_key1_length(key1_ty: String) -> Option<usize> {
     let table = get_double_map_key1_length_table();
-    table.get(&key1_ty).copied()
+    table.get(&key1_ty).copied().map(|x| x as usize)
 }
 
-// Returns the length of this hasher in hex.
+/// Returns the length of this hasher in hex.
 fn hash_length_of(hasher: &StorageHasher) -> usize {
     match hasher {
         StorageHasher::Blake2_128 => 32,
@@ -222,6 +241,42 @@ fn hash_length_of(hasher: &StorageHasher) -> usize {
 
 fn generic_decode<T: codec::Decode>(encoded: Vec<u8>) -> Result<T, codec::Error> {
     Decode::decode(&mut encoded.as_slice())
+}
+
+// TODO: use a script to generate this function automatically.
+//
+// [
+// "(BalanceOf<T>, BalanceOf<T>, T::BlockNumber)",
+// "(BalanceOf<T>, Vec<T::AccountId>)",
+// "(OpaqueCall, T::AccountId, BalanceOf<T>)",
+// "(Perbill, BalanceOf<T>)",
+// "(T::AccountId, BalanceOf<T>, bool)",
+// "(T::AccountId, Data)",
+// "(T::BlockNumber, T::BlockNumber)",
+// "(T::BlockNumber, Vec<T::AccountId>)",
+// "(T::Hash, VoteThreshold)",
+// "(Vec<(T::AccountId, T::ProxyType)>, BalanceOf<T>)",
+// "(Vec<T::AccountId>, BalanceOf<T>)",
+// "<T as Trait<I>>::Proposal",
+// "AccountData<T::Balance>",
+// "AccountInfo<T::Index, T::AccountData>",
+// "AccountStatus<BalanceOf<T>>", "ActiveEraInfo", "BalanceOf<T>", "DigestOf<T>", "ElectionResult<T::AccountId, BalanceOf<T>>", "ElectionScore", "ElectionStatus<T::BlockNumber>", "EraIndex", "EraRewardPoints<T::AccountId>", "EthereumAddress", "EventIndex", "Exposure<T::AccountId, BalanceOf<T>>", "Forcing", "LastRuntimeUpgradeInfo", "MaybeRandomness", "Multiplier", "Multisig<T::BlockNumber, BalanceOf<T>, T::AccountId>", "NextConfigDescriptor", "Nominations<T::AccountId>", "OffenceDetails<T::AccountId, T::IdentificationTuple>", "OpenTip<T::AccountId, BalanceOf<T>, T::BlockNumber, T::Hash>", "Perbill", "Phase", "PreimageStatus<T::AccountId, BalanceOf<T>, T::BlockNumber>", "PropIndex", "Proposal<T::AccountId, BalanceOf<T>>", "ProposalIndex", "ReferendumIndex", "ReferendumInfo<T::BlockNumber, T::Hash, BalanceOf<T>>", "Registration<BalanceOf<T>>", "Releases", "RewardDestination", "SessionIndex", "SetId", "StakingLedger<T::AccountId, BalanceOf<T>>", "StatementKind", "StoredPendingChange<T::BlockNumber>", "StoredState<T::BlockNumber>", "T::AccountId", "T::Balance", "T::BlockNumber", "T::Hash", "T::Keys", "T::Moment", "T::ValidatorId", "TaskAddress<T::BlockNumber>", "ValidatorPrefs", "Vec<(AuthorityId, BabeAuthorityWeight)>", "Vec<(EraIndex, SessionIndex)>", "Vec<(PropIndex, T::Hash, T::AccountId)>", "Vec<(T::AccountId, BalanceOf<T>)>", "Vec<(T::BlockNumber, EventIndex)>", "Vec<(T::ValidatorId, T::Keys)>", "Vec<BalanceLock<T::Balance>>", "Vec<DeferredOffenceOf<T>>", "Vec<EventRecord<T::Event, T::Hash>>", "Vec<Option<RegistrarInfo<BalanceOf<T>, T::AccountId>>>", "Vec<Option<Scheduled<<T as Trait>::Call, T::BlockNumber, T::\nPalletsOrigin, T::AccountId>>>", "Vec<ProposalIndex>", "Vec<ReportIdOf<T>>", "Vec<T::AccountId>", "Vec<T::AuthorityId>", "Vec<T::BlockNumber>", "Vec<T::Hash>", "Vec<T::ValidatorId>", "Vec<UnappliedSlash<T::AccountId, BalanceOf<T>>>", "Vec<UncleEntryItem<T::BlockNumber, T::Hash, T::AccountId>>", "Vec<schnorrkel::Randomness>", "Vec<u32>", "Vec<u8>", "VestingInfo<BalanceOf<T>, T::BlockNumber>", "Votes<T::AccountId, T::BlockNumber>", "Voting<BalanceOf<T>, T::AccountId, T::BlockNumber>", "bool", "schnorrkel::Randomness", "slashing::SlashingSpans", "slashing::SpanRecord<BalanceOf<T>>", "u32", "u64", "weights::ExtrinsicsWeight"]
+
+fn try_decode_storage_value(any_ty: &str, encoded: Vec<u8>) {
+    use frame_system::AccountInfo;
+    use pallet_balances::AccountData;
+    use polkadot_primitives::v1::{AccountIndex, Balance};
+
+    match any_ty {
+        "AccountInfo<T::Index, T::AccountData>" => {
+            let decoded =
+                generic_decode::<AccountInfo<AccountIndex, AccountData<Balance>>>(encoded);
+            println!("decoded value:{:?}", decoded);
+        }
+        _ => {
+            println!("Unknown value type: {:?}", any_ty);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -259,20 +314,8 @@ mod tests {
                             ref key1, ref key2, ..
                         } = storage_metadata.ty
                         {
-                            let key1_ty: String = match key1 {
-                                DecodeDifferent::Encode(b) => {
-                                    unreachable!("TODO: really unreachable?")
-                                }
-                                DecodeDifferent::Decoded(o) => o.into(),
-                            };
-
-                            let key2_ty: String = match key2 {
-                                DecodeDifferent::Encode(b) => {
-                                    unreachable!("TODO: really unreachable?")
-                                }
-                                DecodeDifferent::Decoded(o) => o.into(),
-                            };
-
+                            let key1_ty = as_decoded_type(key1.clone());
+                            let key2_ty = as_decoded_type(key2.clone());
                             Some((key1_ty, key2_ty))
                         } else {
                             None
@@ -283,6 +326,33 @@ mod tests {
             .collect::<Vec<_>>();
 
         double_map_keys
+    }
+
+    fn get_value_type(ty: StorageEntryType) -> String {
+        match ty {
+            StorageEntryType::Plain(value) => as_decoded_type(value),
+            StorageEntryType::Map { value, .. } => as_decoded_type(value),
+            StorageEntryType::DoubleMap { value, .. } => as_decoded_type(value),
+        }
+    }
+
+    fn filter_storage_value_types() -> Vec<String> {
+        let metadata = get_metadata();
+        let mut value_types = metadata
+            .modules
+            .into_iter()
+            .map(|(_, module_metadata)| {
+                module_metadata
+                    .storage
+                    .into_iter()
+                    .map(|(_, storage_metadata)| get_value_type(storage_metadata.ty))
+            })
+            .flatten()
+            .collect::<Vec<_>>();
+
+        value_types.sort();
+        value_types.dedup();
+        value_types
     }
 
     // hex(encoded): 010000000864000000000000000000000000000000c80000000000000000000000000000002c01000000000000000000000000000090010000000000000000000000000000
@@ -311,10 +381,9 @@ mod tests {
         //      Account ID: 0xbe5ddb1579b72e84524fc29e78609e3caf42e85aa118ebfe0b0ad404b5bdd25f
         // Blake2 128 Hash: 0x32a5935f6edc617ae178fef9eb1e211f
         let metadata = get_metadata();
-        let table: StoragePrefixLookupTable = metadata.into();
+        let table: StorageMetadataLookupTable = metadata.into();
 
         let storage_key = "26aa394eea5630e07c48ae0c9558cef7b99d880ec681799c0cf30e8886371da932a5935f6edc617ae178fef9eb1e211fbe5ddb1579b72e84524fc29e78609e3caf42e85aa118ebfe0b0ad404b5bdd25f";
-        let storage_value = "010000000864000000000000000000000000000000c80000000000000000000000000000002c01000000000000000000000000000090010000000000000000000000000000";
 
         let expected = TransparentStorageKey {
             module_prefix: "System".into(),
@@ -337,11 +406,14 @@ mod tests {
             generic_decode::<AccountInfo<AccountIndex, AccountData<Balance>>>(encoded)
         };
 
+        // let try_decode_balance = |encoded: Vec<u8>| generic_decode::<Balance>(encoded);
+
         storage_value_decode_fn_map.insert(
             String::from("AccountInfo<T::Index, T::AccountData>"),
             try_decode_account_info,
         );
 
+        let storage_value = "010000000864000000000000000000000000000000c80000000000000000000000000000002c01000000000000000000000000000090010000000000000000000000000000";
         if let TransparentStorageType::Map { key, value_ty } = expected.ty {
             let decode_fn = storage_value_decode_fn_map.get(&value_ty).unwrap();
             let decoded_value = decode_fn(hex::decode(storage_value).unwrap()).unwrap();
@@ -360,7 +432,7 @@ mod tests {
         // key2 twxo_64_concat T::ValidatorId
         let storage_key = "2b06af9719ac64d755623cda8ddd9b94b1c371ded9e9c565e89ba783c4d5f5f9b4def25cfda6ef3a00000000e535263148daaf49be5ddb1579b72e84524fc29e78609e3caf42e85aa118ebfe0b0ad404b5bdd25f";
         let metadata = get_metadata();
-        let table: StoragePrefixLookupTable = metadata.into();
+        let table: StorageMetadataLookupTable = metadata.into();
         println!("{:?}", table.parse_storage_key(storage_key.into()));
 
         let expected = TransparentStorageKey {
@@ -371,6 +443,7 @@ mod tests {
                 key1_ty: "SessionIndex".into(),
                 key2: "be5ddb1579b72e84524fc29e78609e3caf42e85aa118ebfe0b0ad404b5bdd25f".into(),
                 key2_ty: "T::ValidatorId".into(),
+                value_ty: "u32".into(),
             },
         };
 
@@ -418,5 +491,7 @@ mod tests {
         {
             assert_eq!(decode_fn(encoded_account_info).unwrap(), mock_account_info);
         }
+
+        println!("----- {:?}", filter_storage_value_types());
     }
 }
